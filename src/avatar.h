@@ -14,7 +14,7 @@ enum Expression {
 class StackChanFace {
 public:
     void begin() {
-        M5.Display.setRotation(1);
+        M5.Display.setRotation(0);
         M5.Display.setBrightness(200);
         M5.Display.fillScreen(TFT_BLACK);
 
