@@ -39,43 +39,14 @@ public:
 
     void begin()
     {
-        if (_initialized) return;
+        if (_started) return;
+        _started      = true;
         _mutex        = xSemaphoreCreateMutex();
         _transfer_sem = xSemaphoreCreateBinary();
         setDebug("installing host...");
 
-        usb_host_config_t host_config   = {};
-        host_config.skip_phy_setup      = false;
-        host_config.root_port_unpowered = false;
-        host_config.intr_flags          = ESP_INTR_FLAG_LEVEL1;
-
-        esp_err_t err = usb_host_install(&host_config);
-        if (err != ESP_OK) {
-            setDebug("install err: %s", esp_err_to_name(err));
-            ESP_LOGE(TAG, "usb_host_install failed: %s", esp_err_to_name(err));
-            return;
-        }
-
-        // Register client BEFORE starting event loops so we never miss NEW_DEV
-        usb_host_client_config_t client_config    = {};
-        client_config.is_synchronous              = false;
-        client_config.max_num_event_msg           = 8;
-        client_config.async.client_event_callback = clientEventCallback;
-        client_config.async.callback_arg          = this;
-
-        err = usb_host_client_register(&client_config, &_client_hdl);
-        if (err != ESP_OK) {
-            setDebug("client_reg err: %s", esp_err_to_name(err));
-            ESP_LOGE(TAG, "usb_host_client_register failed: %s", esp_err_to_name(err));
-            return;
-        }
-
-        xTaskCreatePinnedToCore(usbHostTask, "nxt_usb_host", 4096, this, 5, nullptr, 0);
-        xTaskCreatePinnedToCore(clientTask, "nxt_usb_client", 4096, this, 4, nullptr, 0);
-
-        _initialized = true;
-        setDebug("host ready (0 devs)");
-        ESP_LOGI(TAG, "USB Host initialized. Waiting for Lego NXT...");
+        // Run usb_host_install on Core 1 so USB ISR doesn't compete with Wi-Fi/peripherals on Core 0
+        xTaskCreatePinnedToCore(usbHostTask, "nxt_usb_host", 4096, this, 5, nullptr, 1);
     }
 
     // Call periodically if not yet connected to catch any already-enumerated device
@@ -145,7 +116,8 @@ private:
     uint8_t _out_ep                      = NXT_DEFAULT_EP;
     uint8_t _iface_num                   = 0;
     volatile bool _device_connected      = false;
-    bool _initialized                    = false;
+    volatile bool _initialized           = false;
+    bool _started                        = false;
     SemaphoreHandle_t _mutex             = nullptr;
     SemaphoreHandle_t _transfer_sem      = nullptr;
     char _debug_buf[64]                  = "idle";
@@ -267,8 +239,48 @@ private:
         }
     }
 
-    static void usbHostTask(void*)
+    static void usbHostTask(void* arg)
     {
+        auto* self = static_cast<NxtUsbHost*>(arg);
+
+        usb_host_config_t host_config   = {};
+        host_config.skip_phy_setup      = false;
+        host_config.root_port_unpowered = false;
+        host_config.intr_flags          = ESP_INTR_FLAG_LOWMED;
+
+        esp_err_t err = usb_host_install(&host_config);
+        if (err == ESP_ERR_NOT_FOUND) {
+            host_config.intr_flags = ESP_INTR_FLAG_LOWMED | ESP_INTR_FLAG_SHARED;
+            err                    = usb_host_install(&host_config);
+        }
+        if (err != ESP_OK) {
+            self->setDebug("install err: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "usb_host_install failed: %s", esp_err_to_name(err));
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        // Register client BEFORE entering event loop so we never miss NEW_DEV
+        usb_host_client_config_t client_config    = {};
+        client_config.is_synchronous              = false;
+        client_config.max_num_event_msg           = 8;
+        client_config.async.client_event_callback = clientEventCallback;
+        client_config.async.callback_arg          = self;
+
+        err = usb_host_client_register(&client_config, &self->_client_hdl);
+        if (err != ESP_OK) {
+            self->setDebug("client_reg err: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "usb_host_client_register failed: %s", esp_err_to_name(err));
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        xTaskCreatePinnedToCore(clientTask, "nxt_usb_client", 4096, self, 4, nullptr, 1);
+
+        self->_initialized = true;
+        self->setDebug("host ready (0 devs)");
+        ESP_LOGI(TAG, "USB Host initialized on Core %d. Waiting for Lego NXT...", xPortGetCoreID());
+
         while (true) {
             uint32_t event_flags = 0;
             usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
