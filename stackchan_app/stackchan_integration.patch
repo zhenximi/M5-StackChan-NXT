@@ -1,0 +1,147 @@
+diff --git a/firmware/main/CMakeLists.txt b/firmware/main/CMakeLists.txt
+index d118f7e..198ba9a 100644
+--- a/firmware/main/CMakeLists.txt
++++ b/firmware/main/CMakeLists.txt
+@@ -307,7 +307,10 @@ idf_component_register(SRCS ${SOURCES}
+                         esp_pm
+                         esp_psram
+                         esp_netif
++                        esp_wifi
++                        esp_http_server
+                         esp_http_client
++                        usb
+                         mbedtls
+                         espressif__cjson
+                         esp_eth
+diff --git a/firmware/main/apps/apps.h b/firmware/main/apps/apps.h
+index 77cc9b7..00eed1c 100644
+--- a/firmware/main/apps/apps.h
++++ b/firmware/main/apps/apps.h
+@@ -12,3 +12,4 @@
+ #include "app_app_center/app_app_center.h"
+ #include "app_ezdata/app_ezdata.h"
+ #include "app_dance/app_dance.h"
++#include "app_nxt_commander/app_nxt_commander.h"
+diff --git a/firmware/main/hal/board/hal_bridge.h b/firmware/main/hal/board/hal_bridge.h
+index aab08f0..529e4b6 100644
+--- a/firmware/main/hal/board/hal_bridge.h
++++ b/firmware/main/hal/board/hal_bridge.h
+@@ -57,6 +57,8 @@ i2c_master_bus_handle_t board_get_i2c_bus();
+ StackChanCamera* board_get_camera();
+ int board_get_battery_level();
+ bool board_is_battery_charging();
++void board_set_usb_output(bool enabled);
++bool board_is_usb_vbus_present();
+ void board_set_backlight_brightness(uint8_t brightness, bool permanent = false);
+ uint8_t board_get_backlight_brightness();
+ void board_set_speaker_volume(uint8_t volume, bool permanent = false);
+diff --git a/firmware/main/hal/board/stackchan.cc b/firmware/main/hal/board/stackchan.cc
+index e4ab07a..95d61a6 100644
+--- a/firmware/main/hal/board/stackchan.cc
++++ b/firmware/main/hal/board/stackchan.cc
+@@ -246,6 +246,17 @@ public:
+         WriteReg(0x03, 0b10000011);
+         vTaskDelay(pdMS_TO_TICKS(10));
+     }
++
++    void SetUsbOutput(bool enabled)
++    {
++        uint8_t val = ReadReg(0x02);
++        if (enabled) {
++            val |= 0b00100000;  // P0_5 = USB_OTG_EN
++        } else {
++            val &= ~0b00100000;
++        }
++        WriteReg(0x02, val);
++    }
+ };
+ 
+ class Ft6336 : public I2cDevice {
+@@ -748,6 +759,22 @@ public:
+     {
+         return i2c_bus_;
+     }
++
++    void SetUsbOutput(bool enabled)
++    {
++        if (aw9523_) {
++            aw9523_->SetUsbOutput(enabled);
++        }
++    }
++
++    bool IsUsbVbusPresent()
++    {
++        std::lock_guard<std::mutex> lock(power_state_mutex_);
++        if (power_state_.status_valid) {
++            return power_state_.has_external_power;
++        }
++        return false;
++    }
+ };
+ 
+ DECLARE_BOARD(M5StackCoreS3Board);
+@@ -791,6 +818,18 @@ bool hal_bridge::board_is_battery_charging()
+     }
+ }
+ 
++void hal_bridge::board_set_usb_output(bool enabled)
++{
++    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
++    board.SetUsbOutput(enabled);
++}
++
++bool hal_bridge::board_is_usb_vbus_present()
++{
++    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
++    return board.IsUsbVbusPresent();
++}
++
+ void hal_bridge::board_set_backlight_brightness(uint8_t brightness, bool permanent)
+ {
+     auto& board    = Board::GetInstance();
+diff --git a/firmware/main/hal/hal.cpp b/firmware/main/hal/hal.cpp
+index 3ca8a14..6e9781e 100644
+--- a/firmware/main/hal/hal.cpp
++++ b/firmware/main/hal/hal.cpp
+@@ -233,6 +233,16 @@ bool Hal::isBatteryCharging()
+     return hal_bridge::board_is_battery_charging();
+ }
+ 
++void Hal::setUsbOutput(bool enabled)
++{
++    hal_bridge::board_set_usb_output(enabled);
++}
++
++bool Hal::isUsbVbusPresent()
++{
++    return hal_bridge::board_is_usb_vbus_present();
++}
++
+ void Hal::factoryReset()
+ {
+     mclog::tagInfo(_tag, "start factory reset");
+diff --git a/firmware/main/hal/hal.h b/firmware/main/hal/hal.h
+index 529c456..ce46928 100644
+--- a/firmware/main/hal/hal.h
++++ b/firmware/main/hal/hal.h
+@@ -238,6 +238,8 @@ public:
+ 
+     /* ---------------------------------- Power --------------------------------- */
+     void setServoPowerEnabled(bool enabled);
++    void setUsbOutput(bool enabled);
++    bool isUsbVbusPresent();
+ 
+     /* -------------------------------- Websocket ------------------------------- */
+     uitk::Signal<std::string_view> onWsMotionData;
+diff --git a/firmware/main/main.cpp b/firmware/main/main.cpp
+index 4c1f20f..520daa2 100644
+--- a/firmware/main/main.cpp
++++ b/firmware/main/main.cpp
+@@ -41,6 +41,7 @@ extern "C" void app_main(void)
+                                      GetMooncake().installApp(std::make_unique<AppAppCenter>()));
+         hal_toggles::register_app_id(hal_toggles::App::Ezdata, GetMooncake().installApp(std::make_unique<AppEzdata>()));
+         hal_toggles::register_app_id(hal_toggles::App::Dance, GetMooncake().installApp(std::make_unique<AppDance>()));
++        GetMooncake().installApp(std::make_unique<AppNxtCommander>());
+         GetMooncake().installApp(std::make_unique<AppSetup>());
+ 
+         // Main loop
