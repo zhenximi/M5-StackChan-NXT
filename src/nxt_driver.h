@@ -28,13 +28,16 @@ public:
     bool isConnected() const { return _device_connected; }
 
     void begin() {
+        if (_initialized) return;
         _mutex = xSemaphoreCreateMutex();
         _transfer_sem = xSemaphoreCreateBinary();
 
         // 1. Install USB Host Library
         const usb_host_config_t host_config = {
             .skip_phy_setup = false,
+            .root_port_unpowered = false,
             .intr_flags = ESP_INTR_FLAG_LEVEL1,
+            .enum_filter_cb = NULL,
         };
         esp_err_t err = usb_host_install(&host_config);
         if (err != ESP_OK) {
@@ -62,6 +65,7 @@ public:
 
         // 4. Start Client event processing task
         xTaskCreatePinnedToCore(clientTask, "usb_client", 4096, this, 2, NULL, 0);
+        _initialized = true;
         Serial.println("[USB] USB Host initialized. Waiting for Lego NXT...");
     }
 
@@ -116,25 +120,29 @@ private:
     usb_device_handle_t _dev_hdl = NULL;
     usb_transfer_t* _out_transfer = NULL;
     volatile bool _device_connected = false;
+    bool _initialized = false;
     SemaphoreHandle_t _mutex = NULL;
     SemaphoreHandle_t _transfer_sem = NULL;
 
     bool sendPacket(const uint8_t* data, size_t len) {
         if (!_device_connected || !_out_transfer) return false;
         if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            bool ok = false;
             if (_device_connected && _out_transfer) {
+                xSemaphoreTake(_transfer_sem, 0); // Drain any stale semaphore state
                 memcpy(_out_transfer->data_buffer, data, len);
                 _out_transfer->num_bytes = len;
                 _out_transfer->bEndpointAddress = NXT_OUT_EP;
                 _out_transfer->device_handle = _dev_hdl;
-                
+
                 esp_err_t err = usb_host_transfer_submit(_out_transfer);
                 if (err == ESP_OK) {
                     xSemaphoreTake(_transfer_sem, pdMS_TO_TICKS(50));
+                    ok = true;
                 }
             }
             xSemaphoreGive(_mutex);
-            return true;
+            return ok;
         }
         return false;
     }
@@ -171,16 +179,17 @@ private:
                     if (desc->idVendor == NXT_VID && desc->idProduct == NXT_PID) {
                         Serial.println("[USB] Lego Mindstorms NXT brick detected!");
                         self->_dev_hdl = dev_hdl;
-                        
-                        // Claim Interface 0 (Alt Setting 0)
-                        usb_host_interface_claim(self->_client_hdl, dev_hdl, 0, 0);
 
-                        // Allocate 64-byte OUT transfer buffer
-                        usb_host_transfer_alloc(64, 0, &self->_out_transfer);
-                        self->_out_transfer->callback = transferCallback;
-                        self->_out_transfer->context = self;
-
-                        self->_device_connected = true;
+                        if (usb_host_interface_claim(self->_client_hdl, dev_hdl, 0, 0) == ESP_OK &&
+                            usb_host_transfer_alloc(64, 0, &self->_out_transfer) == ESP_OK) {
+                            self->_out_transfer->callback = transferCallback;
+                            self->_out_transfer->context = self;
+                            self->_device_connected = true;
+                        } else {
+                            Serial.println("[USB] Failed to claim NXT interface or alloc transfer");
+                            usb_host_device_close(self->_client_hdl, dev_hdl);
+                            self->_dev_hdl = NULL;
+                        }
                     } else {
                         usb_host_device_close(self->_client_hdl, dev_hdl);
                     }

@@ -12,14 +12,35 @@ const char* AP_PASS = "12345678";
 WebServer server(80);
 StackChanFace face;
 bool usbHostStarted = false;
+uint32_t unpluggedSinceMs = 0;
+
+void updateStatusDisplay() {
+    bool nxtOnline = usbHostStarted && NxtUsbHost::instance().isConnected();
+    if (nxtOnline) {
+        face.setStatusText("192.168.4.1 | NXT Connected!");
+    } else if (usbHostStarted) {
+        face.setStatusText("192.168.4.1 | Waiting NXT USB...");
+    } else {
+        face.setStatusText("192.168.4.1 | PC USB (Unplug for NXT)");
+    }
+}
 
 void setup() {
     auto cfg = M5.config();
+    cfg.serial_baudrate = 115200;
     M5.begin(cfg);
     Serial.begin(115200);
+    delay(200);
 
-    // 1. Initialize screen and face first
-    M5.Display.setBrightness(180);
+    Serial.println("\n=================================");
+    Serial.println("  Stack-chan NXT Commander Boot  ");
+    Serial.println("=================================");
+    Serial.printf("[Power] isVBUS=%d, Bat=%d%%, Charging=%d\n",
+                  M5.Power.Axp2101.isVBUS(),
+                  M5.Power.getBatteryLevel(),
+                  M5.Power.isCharging());
+
+    // 1. Initialize screen and animated face immediately
     face.begin();
     face.setExpression(EXP_NORMAL);
 
@@ -42,7 +63,6 @@ void setup() {
             NxtUsbHost::instance().drive(left, right);
         }
 
-        // Update facial expression according to movement
         if (left > 0 && right > 0) face.setExpression(EXP_FORWARD);
         else if (left < 0 && right < 0) face.setExpression(EXP_BACKWARD);
         else if (left < right) face.setExpression(EXP_LEFT);
@@ -72,12 +92,13 @@ void setup() {
 
     server.on("/api/status", HTTP_GET, []() {
         bool nxtOnline = usbHostStarted && NxtUsbHost::instance().isConnected();
-        String json = "{\"nxt\":" + String(nxtOnline ? "true" : "false") + 
+        String json = "{\"nxt\":" + String(nxtOnline ? "true" : "false") +
                       ",\"host\":" + String(usbHostStarted ? "true" : "false") + "}";
         server.send(200, "application/json", json);
     });
 
     server.begin();
+    updateStatusDisplay();
     Serial.println("[HTTP] Web server started.");
 }
 
@@ -86,16 +107,28 @@ void loop() {
     server.handleClient();
     face.update();
 
-    // Dynamically manage USB Host:
-    // If not connected to external PC/charger (e.g. running on battery connected to NXT),
-    // safely enable 5V VBUS boost and start the USB Host stack.
+    // Safely activate USB Host only when external 5V (PC/Charger) is NOT present on VBUS
     if (!usbHostStarted) {
         if (!M5.Power.Axp2101.isVBUS()) {
-            Serial.println("[Power] Not connected to PC power. Starting USB Host for Lego NXT...");
-            M5.Power.setUsbOutput(true);
-            NxtUsbHost::instance().begin();
-            usbHostStarted = true;
+            if (unpluggedSinceMs == 0) {
+                unpluggedSinceMs = millis();
+            } else if (millis() - unpluggedSinceMs > 500) {
+                Serial.println("[Power] No PC VBUS detected. Enabling 5V USB Host for Lego NXT...");
+                M5.Power.setUsbOutput(true);
+                delay(50);
+                NxtUsbHost::instance().begin();
+                usbHostStarted = true;
+                updateStatusDisplay();
+            }
+        } else {
+            unpluggedSinceMs = 0;
         }
+    }
+
+    static uint32_t lastCheck = 0;
+    if (millis() - lastCheck > 1000) {
+        lastCheck = millis();
+        updateStatusDisplay();
     }
 
     delay(2);

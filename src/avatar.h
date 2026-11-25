@@ -15,7 +15,7 @@ class StackChanFace {
 public:
     void begin() {
         M5.Display.setRotation(1);
-        M5.Display.setBrightness(180); // Ensure backlight is ON
+        M5.Display.setBrightness(200);
         M5.Display.fillScreen(TFT_BLACK);
 
         _useCanvas = _canvas.createSprite(320, 240);
@@ -29,6 +29,13 @@ public:
     void setExpression(Expression exp) {
         if (_currentExp != exp) {
             _currentExp = exp;
+            draw();
+        }
+    }
+
+    void setStatusText(const String& text) {
+        if (_statusText != text) {
+            _statusText = text;
             draw();
         }
     }
@@ -55,59 +62,25 @@ public:
         int eyeRadius = 24;
         int leftEyeX = 100 + eyeOffsetX;
         int rightEyeX = 220 + eyeOffsetX;
-        int eyeY = 105 + eyeOffsetY;
+        int eyeY = 98 + eyeOffsetY;
 
         if (_useCanvas) {
-            _canvas.fillScreen(TFT_BLACK);
-            _canvas.fillCircle(leftEyeX, eyeY, eyeRadius, TFT_CYAN);
-            _canvas.fillCircle(rightEyeX, eyeY, eyeRadius, TFT_CYAN);
-            _canvas.fillCircle(leftEyeX - 6, eyeY - 6, 6, TFT_WHITE);
-            _canvas.fillCircle(rightEyeX - 6, eyeY - 6, 6, TFT_WHITE);
-
-            if (_currentExp == EXP_SURPRISED) {
-                _canvas.fillCircle(160, 165, 15, TFT_PINK);
-                _canvas.fillCircle(160, 165, 10, TFT_BLACK);
-            } else if (_currentExp == EXP_HAPPY || _currentExp == EXP_FORWARD) {
-                _canvas.fillTriangle(140, 155, 180, 155, 160, 175, TFT_WHITE);
-                _canvas.fillTriangle(145, 157, 175, 157, 160, 172, TFT_PINK);
-            } else {
-                _canvas.fillRoundRect(145, 160, 30, 8, 4, TFT_WHITE);
-            }
+            drawScene(_canvas, leftEyeX, rightEyeX, eyeY, eyeRadius, false);
             _canvas.pushSprite(0, 0);
         } else {
             M5.Display.startWrite();
-            M5.Display.fillScreen(TFT_BLACK);
-            M5.Display.fillCircle(leftEyeX, eyeY, eyeRadius, TFT_CYAN);
-            M5.Display.fillCircle(rightEyeX, eyeY, eyeRadius, TFT_CYAN);
-            M5.Display.fillCircle(leftEyeX - 6, eyeY - 6, 6, TFT_WHITE);
-            M5.Display.fillCircle(rightEyeX - 6, eyeY - 6, 6, TFT_WHITE);
-
-            if (_currentExp == EXP_SURPRISED) {
-                M5.Display.fillCircle(160, 165, 15, TFT_PINK);
-                M5.Display.fillCircle(160, 165, 10, TFT_BLACK);
-            } else if (_currentExp == EXP_HAPPY || _currentExp == EXP_FORWARD) {
-                M5.Display.fillTriangle(140, 155, 180, 155, 160, 175, TFT_WHITE);
-                M5.Display.fillTriangle(145, 157, 175, 157, 160, 172, TFT_PINK);
-            } else {
-                M5.Display.fillRoundRect(145, 160, 30, 8, 4, TFT_WHITE);
-            }
+            drawScene(M5.Display, leftEyeX, rightEyeX, eyeY, eyeRadius, false);
             M5.Display.endWrite();
         }
     }
 
     void blink() {
         if (_useCanvas) {
-            _canvas.fillScreen(TFT_BLACK);
-            _canvas.fillRoundRect(75, 103, 50, 6, 3, TFT_CYAN);
-            _canvas.fillRoundRect(195, 103, 50, 6, 3, TFT_CYAN);
-            _canvas.fillRoundRect(145, 160, 30, 8, 4, TFT_WHITE);
+            drawScene(_canvas, 100, 220, 98, 24, true);
             _canvas.pushSprite(0, 0);
         } else {
             M5.Display.startWrite();
-            M5.Display.fillScreen(TFT_BLACK);
-            M5.Display.fillRoundRect(75, 103, 50, 6, 3, TFT_CYAN);
-            M5.Display.fillRoundRect(195, 103, 50, 6, 3, TFT_CYAN);
-            M5.Display.fillRoundRect(145, 160, 30, 8, 4, TFT_WHITE);
+            drawScene(M5.Display, 100, 220, 98, 24, true);
             M5.Display.endWrite();
         }
         delay(120);
@@ -115,8 +88,42 @@ public:
     }
 
 private:
+    template <typename T>
+    void drawScene(T& gfx, int leftEyeX, int rightEyeX, int eyeY, int eyeRadius, bool closed) {
+        gfx.fillScreen(TFT_BLACK);
+
+        if (closed) {
+            gfx.fillRoundRect(75, eyeY - 2, 50, 6, 3, TFT_CYAN);
+            gfx.fillRoundRect(195, eyeY - 2, 50, 6, 3, TFT_CYAN);
+        } else {
+            gfx.fillCircle(leftEyeX, eyeY, eyeRadius, TFT_CYAN);
+            gfx.fillCircle(rightEyeX, eyeY, eyeRadius, TFT_CYAN);
+            gfx.fillCircle(leftEyeX - 6, eyeY - 6, 6, TFT_WHITE);
+            gfx.fillCircle(rightEyeX - 6, eyeY - 6, 6, TFT_WHITE);
+        }
+
+        if (_currentExp == EXP_SURPRISED) {
+            gfx.fillCircle(160, 158, 15, TFT_PINK);
+            gfx.fillCircle(160, 158, 10, TFT_BLACK);
+        } else if (_currentExp == EXP_HAPPY || _currentExp == EXP_FORWARD) {
+            gfx.fillTriangle(140, 148, 180, 148, 160, 168, TFT_WHITE);
+            gfx.fillTriangle(145, 150, 175, 150, 160, 165, TFT_PINK);
+        } else {
+            gfx.fillRoundRect(145, 154, 30, 8, 4, TFT_WHITE);
+        }
+
+        if (_statusText.length() > 0) {
+            gfx.fillRect(0, 218, 320, 22, 0x18E3);
+            gfx.setTextColor(TFT_LIGHTGREY);
+            gfx.setTextDatum(textdatum_t::middle_center);
+            gfx.setTextSize(1);
+            gfx.drawString(_statusText, 160, 229);
+        }
+    }
+
     M5Canvas _canvas{&M5.Display};
     bool _useCanvas = false;
     Expression _currentExp = EXP_NORMAL;
     uint32_t _lastBlink = 0;
+    String _statusText = "WiFi: StackChan-NXT (192.168.4.1)";
 };
