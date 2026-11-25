@@ -47,7 +47,7 @@ public:
 
         // 3. Register USB client
         const usb_host_client_config_t client_config = {
-            .is_async = true,
+            .is_synchronous = false,
             .max_num_event_msg = 5,
             .async = {
                 .client_event_callback = clientEventCallback,
