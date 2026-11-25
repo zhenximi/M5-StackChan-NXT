@@ -217,6 +217,9 @@ void AppNxtCommander::onRunning()
 
     if (GetHAL().millis() - _last_status_ms > 500) {
         _last_status_ms = GetHAL().millis();
+        if (_usb_host_started && !NxtUsbHost::instance().isConnected()) {
+            NxtUsbHost::instance().pollExistingDevices();
+        }
         update_status_speech();
     }
 
@@ -319,10 +322,12 @@ esp_err_t AppNxtCommander::handle_status(httpd_req_t* req)
 {
     auto* self     = static_cast<AppNxtCommander*>(req->user_ctx);
     bool nxt_ready = self->_usb_host_started && NxtUsbHost::instance().isConnected();
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "{\"nxt\":%s,\"host\":%s}",
+    auto dbg       = NxtUsbHost::instance().debugInfo();
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "{\"nxt\":%s,\"host\":%s,\"dbg\":\"%s\"}",
                   nxt_ready ? "true" : "false",
-                  self->_usb_host_started ? "true" : "false");
+                  self->_usb_host_started ? "true" : "false",
+                  dbg.c_str());
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, buf);
 }

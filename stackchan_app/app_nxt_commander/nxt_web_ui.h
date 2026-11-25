@@ -136,8 +136,8 @@ static const char NXT_INDEX_HTML[] = R"rawliteral(
     setInterval(() => {
       fetch('/api/status').then(r => r.json()).then(d => {
         const el = document.getElementById('status');
-        if (d.nxt) { el.innerText = '● Lego NXT Connected'; el.className = 'status-badge connected'; }
-        else if (d.host) { el.innerText = '○ Waiting for NXT USB...'; el.className = 'status-badge'; }
+        if (d.nxt) { el.innerText = '● Lego NXT Connected (' + (d.dbg || '') + ')'; el.className = 'status-badge connected'; }
+        else if (d.host) { el.innerText = '○ Waiting NXT (' + (d.dbg || '0 devs') + ')'; el.className = 'status-badge'; }
         else { el.innerText = '○ Unplug PC USB to start NXT Host'; el.className = 'status-badge'; }
       }).catch(() => {});
     }, 1500);
