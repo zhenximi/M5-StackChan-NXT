@@ -45,6 +45,7 @@ static const char NXT_INDEX_HTML[] = R"rawliteral(
       color: #fff; font-size: 0.95rem; font-weight: 600; cursor: pointer;
     }
     .action-btn:active { background: #00adb5; border-color: #00fff5; }
+    .action-btn.on { background: #0e4f53; border-color: #00adb5; color: #00fff5; }
     .hint { font-size: 0.75rem; color: #666; margin-top: 14px; text-align: center; }
   </style>
 </head>
@@ -74,6 +75,7 @@ static const char NXT_INDEX_HTML[] = R"rawliteral(
   <div class="actions">
     <button class="action-btn" onclick="playBeep()">🔊 Beep</button>
     <button class="action-btn" onclick="playTada()">🎉 Fanfare</button>
+    <button class="action-btn" id="flipBtn" onclick="toggleFlip()">🔄 Flip</button>
   </div>
 
   <div class="hint">Left: Port B | Right: Port C | Keys: WASD / Arrows / Space</div>
@@ -83,8 +85,23 @@ static const char NXT_INDEX_HTML[] = R"rawliteral(
     function getSpeed() { return parseInt(document.getElementById('speed').value); }
     function sendCmd(url) { fetch(url).catch(() => {}); }
 
+    let flipped = localStorage.getItem('nxtFlip') === '1';
+    function renderFlip() {
+      const b = document.getElementById('flipBtn');
+      b.innerText = flipped ? '🔄 Flipped' : '🔄 Flip';
+      b.classList.toggle('on', flipped);
+    }
+    function toggleFlip() {
+      flipped = !flipped;
+      localStorage.setItem('nxtFlip', flipped ? '1' : '0');
+      renderFlip();
+    }
+    renderFlip();
+
     function executeMove(dir) {
       const s = getSpeed();
+      // 180° flip: robot's "front" is its back -> swap fwd/rev (spins are frame-independent)
+      if (flipped) { if (dir === 'fwd') dir = 'rev'; else if (dir === 'rev') dir = 'fwd'; }
       if (dir === 'fwd') sendCmd(`/api/drive?l=${s}&r=${s}`);
       else if (dir === 'rev') sendCmd(`/api/drive?l=${-s}&r=${-s}`);
       else if (dir === 'left') sendCmd(`/api/drive?l=${-s}&r=${s}`);
