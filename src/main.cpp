@@ -35,12 +35,19 @@ void setup() {
     Serial.println("\n=================================");
     Serial.println("  Stack-chan NXT Commander Boot  ");
     Serial.println("=================================");
-    Serial.printf("[Power] isVBUS=%d, Bat=%d%%, Charging=%d\n",
+    Serial.printf("[Board] id=%d, Display=%dx%d, PMIC=%d\n",
+                  (int)M5.getBoard(),
+                  M5.Display.width(),
+                  M5.Display.height(),
+                  (int)M5.Power.getType());
+    Serial.printf("[Power] isVBUS=%d, VBUS=%.2fV, Bat=%ld%%, Charging=%d\n",
                   M5.Power.Axp2101.isVBUS(),
-                  M5.Power.getBatteryLevel(),
+                  M5.Power.Axp2101.getVBUSVoltage(),
+                  (long)M5.Power.getBatteryLevel(),
                   M5.Power.isCharging());
 
     // 1. Initialize screen and animated face immediately
+    M5.Display.setBrightness(255);
     face.begin();
     face.setExpression(EXP_NORMAL);
 
@@ -93,7 +100,9 @@ void setup() {
     server.on("/api/status", HTTP_GET, []() {
         bool nxtOnline = usbHostStarted && NxtUsbHost::instance().isConnected();
         String json = "{\"nxt\":" + String(nxtOnline ? "true" : "false") +
-                      ",\"host\":" + String(usbHostStarted ? "true" : "false") + "}";
+                      ",\"host\":" + String(usbHostStarted ? "true" : "false") +
+                      ",\"board\":" + String((int)M5.getBoard()) +
+                      ",\"vbus\":" + String(M5.Power.Axp2101.isVBUS() ? "true" : "false") + "}";
         server.send(200, "application/json", json);
     });
 
@@ -107,8 +116,8 @@ void loop() {
     server.handleClient();
     face.update();
 
-    // Safely activate USB Host only when external 5V (PC/Charger) is NOT present on VBUS
-    if (!usbHostStarted) {
+    // Safely activate USB Host only when AXP2101 is active AND PC/Charger VBUS is NOT present
+    if (!usbHostStarted && M5.Power.getType() == m5::Power_Class::pmic_axp2101) {
         if (!M5.Power.Axp2101.isVBUS()) {
             if (unpluggedSinceMs == 0) {
                 unpluggedSinceMs = millis();
