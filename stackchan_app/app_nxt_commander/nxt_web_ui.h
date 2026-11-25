@@ -79,6 +79,8 @@ static const char NXT_INDEX_HTML[] = R"rawliteral(
   </div>
 
   <div class="hint">Left: Port B | Right: Port C | Keys: WASD / Arrows / Space</div>
+  <div class="hint" id="voice">🎤 ...</div>
+  <div class="hint">Say: "go forward" · "go back" · "turn left/right" · "spin around" · "stop" · "faster" · "slower" · "beep"</div>
 
   <script>
     let activeDir = null, timer = null;
@@ -94,9 +96,11 @@ static const char NXT_INDEX_HTML[] = R"rawliteral(
     function toggleFlip() {
       flipped = !flipped;
       localStorage.setItem('nxtFlip', flipped ? '1' : '0');
+      sendCmd('/api/flip?on=' + (flipped ? 1 : 0));
       renderFlip();
     }
     renderFlip();
+    sendCmd('/api/flip?on=' + (flipped ? 1 : 0));
 
     function executeMove(dir) {
       const s = getSpeed();
@@ -156,6 +160,7 @@ static const char NXT_INDEX_HTML[] = R"rawliteral(
         if (d.nxt) { el.innerText = '● Lego NXT Connected (' + (d.dbg || '') + ')'; el.className = 'status-badge connected'; }
         else if (d.host) { el.innerText = '○ Waiting NXT (' + (d.dbg || '0 devs') + ')'; el.className = 'status-badge'; }
         else { el.innerText = '○ Unplug PC USB to start NXT Host'; el.className = 'status-badge'; }
+        document.getElementById('voice').innerText = '🎤 ' + (d.voice || 'off') + ' · voice speed ' + (d.vspd || '-') + '%';
       }).catch(() => {});
     }, 1500);
   </script>

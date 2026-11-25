@@ -1,6 +1,7 @@
 #include "app_nxt_commander.h"
 #include "nxt_usb_host.h"
 #include "nxt_web_ui.h"
+#include "nxt_voice.h"
 #include <hal/hal.h>
 #include <mooncake.h>
 #include <mooncake_log.h>
@@ -13,6 +14,7 @@
 #include <esp_event.h>
 #include <esp_log.h>
 #include <cstring>
+#include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 
@@ -88,6 +90,7 @@ void AppNxtCommander::start_http_server()
         {"/api/stop", HTTP_GET, handle_stop, this},
         {"/api/tone", HTTP_GET, handle_tone, this},
         {"/api/status", HTTP_GET, handle_status, this},
+        {"/api/flip", HTTP_GET, handle_flip, this},
     };
     for (const auto& u : uris) {
         httpd_register_uri_handler(_httpd, &u);
@@ -130,6 +133,66 @@ void AppNxtCommander::onOpen()
     view::create_status_bar(0x00ADB5, 0x093538);
 
     update_status_speech();
+
+    // Offline voice commands (StackChan mic -> MultiNet7 English)
+    NxtVoice::instance().begin(
+        [](NxtVoiceCmd c, const char* p, void* ctx) { AppNxtCommander::on_voice_cmd(static_cast<int>(c), p, ctx); },
+        this);
+}
+
+void AppNxtCommander::on_voice_cmd(int cmd_i, const char* phrase, void* ctx)
+{
+    auto* self = static_cast<AppNxtCommander*>(ctx);
+    auto cmd   = static_cast<NxtVoiceCmd>(cmd_i);
+    auto& nxt  = NxtUsbHost::instance();
+    const bool ok = self->_usb_host_started;
+    const uint32_t now = GetHAL().millis();
+    int s = self->_voice_speed.load();
+    CmdState st = CmdState::Idle;
+
+    auto timed = [&](int8_t l, int8_t r, uint32_t ms, CmdState state) {
+        if (ok) nxt.drive(l, r);
+        self->_voice_stop_at.store(now + ms);
+        st = state;
+    };
+
+    // When flipped, robot's front is its back -> swap fwd/rev (spins are frame-independent)
+    const int fwd = self->_flipped.load() ? -1 : 1;
+
+    switch (cmd) {
+        case NxtVoiceCmd::Forward:    timed(fwd * s, fwd * s, 2000, fwd > 0 ? CmdState::Forward : CmdState::Reverse); break;
+        case NxtVoiceCmd::Back:       timed(-fwd * s, -fwd * s, 2000, fwd > 0 ? CmdState::Reverse : CmdState::Forward); break;
+        case NxtVoiceCmd::Left:       timed(-s, s, 600, CmdState::Left); break;
+        case NxtVoiceCmd::Right:      timed(s, -s, 600, CmdState::Right); break;
+        case NxtVoiceCmd::SpinAround: timed(s, -s, 1500, CmdState::Right); break;
+        case NxtVoiceCmd::Stop:
+            if (ok) nxt.stopMotors();
+            self->_voice_stop_at.store(0);
+            break;
+        case NxtVoiceCmd::Faster:
+            s = std::min(100, s + 15);
+            self->_voice_speed.store(s);
+            if (ok) nxt.playTone(880, 120);
+            st = CmdState::Tone;
+            break;
+        case NxtVoiceCmd::Slower:
+            s = std::max(30, s - 15);
+            self->_voice_speed.store(s);
+            if (ok) nxt.playTone(330, 120);
+            st = CmdState::Tone;
+            break;
+        case NxtVoiceCmd::Beep:
+            if (ok) nxt.playTone(523, 200);
+            st = CmdState::Tone;
+            break;
+        default:
+            return;
+    }
+
+    std::snprintf(self->_voice_text, sizeof(self->_voice_text), "Heard: %s", phrase);
+    self->_voice_text_dirty.store(true);
+    self->_pending_state.store(static_cast<uint8_t>(st));
+    self->_state_dirty.store(true);
 }
 
 void AppNxtCommander::apply_avatar_reaction(CmdState state)
@@ -215,12 +278,30 @@ void AppNxtCommander::onRunning()
         apply_avatar_reaction(static_cast<CmdState>(_pending_state.load()));
     }
 
+    // Timed voice moves: auto-stop when deadline passes
+    uint32_t stop_at = _voice_stop_at.load();
+    if (stop_at && (int32_t)(GetHAL().millis() - stop_at) >= 0) {
+        _voice_stop_at.store(0);
+        if (_usb_host_started) NxtUsbHost::instance().stopMotors();
+        apply_avatar_reaction(CmdState::Idle);
+    }
+
+    // Show recognized phrase in speech bubble for 2s
+    if (_voice_text_dirty.exchange(false) && GetStackChan().hasAvatar()) {
+        GetStackChan().avatar().setSpeech(_voice_text);
+        _speech_hold_until = GetHAL().millis() + 2000;
+    }
+    if (_speech_hold_until && (int32_t)(GetHAL().millis() - _speech_hold_until) >= 0) {
+        _speech_hold_until = 0;
+        _last_speech_state = -1;  // force status bubble refresh
+    }
+
     if (GetHAL().millis() - _last_status_ms > 500) {
         _last_status_ms = GetHAL().millis();
         if (_usb_host_started && !NxtUsbHost::instance().isConnected()) {
             NxtUsbHost::instance().pollExistingDevices();
         }
-        update_status_speech();
+        if (!_speech_hold_until) update_status_speech();
     }
 
     GetStackChan().update();
@@ -232,6 +313,7 @@ void AppNxtCommander::onClose()
 {
     mclog::tagInfo(getAppInfo().name, "on close");
 
+    NxtVoice::instance().stop();
     if (_usb_host_started) {
         NxtUsbHost::instance().stopMotors();
         GetHAL().setUsbOutput(false);
@@ -277,6 +359,7 @@ esp_err_t AppNxtCommander::handle_drive(httpd_req_t* req)
     if (self->_usb_host_started) {
         NxtUsbHost::instance().drive(static_cast<int8_t>(left), static_cast<int8_t>(right));
     }
+    self->_voice_stop_at.store(0);  // manual control overrides timed voice move
 
     CmdState st = CmdState::Idle;
     if (left > 0 && right > 0) st = CmdState::Forward;
@@ -323,11 +406,21 @@ esp_err_t AppNxtCommander::handle_status(httpd_req_t* req)
     auto* self     = static_cast<AppNxtCommander*>(req->user_ctx);
     bool nxt_ready = self->_usb_host_started && NxtUsbHost::instance().isConnected();
     auto dbg       = NxtUsbHost::instance().debugInfo();
-    char buf[160];
-    std::snprintf(buf, sizeof(buf), "{\"nxt\":%s,\"host\":%s,\"dbg\":\"%s\"}",
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"nxt\":%s,\"host\":%s,\"dbg\":\"%s\",\"voice\":\"%s\",\"vspd\":%d,\"flip\":%s}",
                   nxt_ready ? "true" : "false",
                   self->_usb_host_started ? "true" : "false",
-                  dbg.c_str());
+                  dbg.c_str(), NxtVoice::instance().status(), self->_voice_speed.load(),
+                  self->_flipped.load() ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, buf);
+}
+
+esp_err_t AppNxtCommander::handle_flip(httpd_req_t* req)
+{
+    auto* self = static_cast<AppNxtCommander*>(req->user_ctx);
+    self->_flipped.store(get_query_int(req, "on", 0) != 0);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }

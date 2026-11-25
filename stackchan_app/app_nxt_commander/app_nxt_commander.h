@@ -25,6 +25,15 @@ private:
     std::atomic<uint8_t> _pending_state{0};
     std::atomic<bool> _state_dirty{false};
 
+    // Voice control
+    std::atomic<int> _voice_speed{60};
+    std::atomic<bool> _flipped{false};
+    std::atomic<uint32_t> _voice_stop_at{0};   // ms deadline for timed voice moves (0 = none)
+    std::atomic<bool> _voice_text_dirty{false};
+    char _voice_text[48]          = {};
+    uint32_t _speech_hold_until   = 0;
+
+    static void on_voice_cmd(int cmd, const char* phrase, void* ctx);
     void start_softap();
     void start_http_server();
     void stop_http_server();
@@ -36,4 +45,5 @@ private:
     static esp_err_t handle_stop(httpd_req_t* req);
     static esp_err_t handle_tone(httpd_req_t* req);
     static esp_err_t handle_status(httpd_req_t* req);
+    static esp_err_t handle_flip(httpd_req_t* req);
 };

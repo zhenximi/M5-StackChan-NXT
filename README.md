@@ -116,3 +116,14 @@ The Lego NXT communicates via standard USB Bulk transfers without the 2-byte RFC
 ## 📄 License
 
 MIT License. Feel free to use, modify, and build awesome Lego robots with Stack-chan!
+
+## Voice control (offline, English)
+NXT.CMD listens on StackChan's mic using ESP-SR MultiNet7 (`mn7_en`), no internet needed.
+Say: "go forward", "go back", "turn left", "turn right", "spin around", "stop", "faster", "slower", "beep".
+Setup: use `stackchan_app/partitions.csv` (adds `nxtvoice` partition at 0x710000; shrinks `ota_1` so OTA updates won't fit), then pack and flash the model:
+```bash
+mkdir -p build/nxt_models && cp -r managed_components/espressif__esp-sr/model/multinet_model/mn7_en build/nxt_models/
+python managed_components/espressif__esp-sr/model/pack_model.py -m build/nxt_models -o ../nxt_srmodels.bin
+python -m esptool --chip esp32s3 -b 921600 --after watchdog-reset write-flash --flash-mode dio --flash-size 16MB \
+  0x8000 build/partition_table/partition-table.bin 0x20000 build/stack-chan.bin 0x710000 build/nxt_srmodels.bin
+```
