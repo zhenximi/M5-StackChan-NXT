@@ -14,6 +14,9 @@
 #include <esp_mn_iface.h>
 #include <esp_mn_models.h>
 #include <esp_mn_speech_commands.h>
+extern "C" {
+#include <flite_g2p.h>
+}
 #include <esp_ae_rate_cvt.h>
 #include <board.h>
 #include <audio/audio_codec.h>
@@ -49,7 +52,7 @@ public:
         _ctx     = ctx;
         _running = true;
         setStatus("loading model...");
-        xTaskCreatePinnedToCore(voiceTask, "nxt_voice", 8192, this, 4, nullptr, 1);
+        xTaskCreatePinnedToCore(voiceTask, "nxt_voice", 16384, this, 4, nullptr, 1);
     }
 
     void stop() { _running = false; }
@@ -76,29 +79,30 @@ private:
 
     struct Phrase {
         NxtVoiceCmd cmd;
+        const char* upper;
         const char* text;
     };
 
     static constexpr Phrase kPhrases[] = {
-        {NxtVoiceCmd::Forward, "go forward"},
-        {NxtVoiceCmd::Forward, "move forward"},
-        {NxtVoiceCmd::Forward, "go straight"},
-        {NxtVoiceCmd::Back, "go back"},
-        {NxtVoiceCmd::Back, "move back"},
-        {NxtVoiceCmd::Back, "go backward"},
-        {NxtVoiceCmd::Left, "turn left"},
-        {NxtVoiceCmd::Right, "turn right"},
-        {NxtVoiceCmd::Stop, "stop"},
-        {NxtVoiceCmd::Stop, "stop now"},
-        {NxtVoiceCmd::Stop, "halt"},
-        {NxtVoiceCmd::Faster, "faster"},
-        {NxtVoiceCmd::Faster, "speed up"},
-        {NxtVoiceCmd::Slower, "slower"},
-        {NxtVoiceCmd::Slower, "slow down"},
-        {NxtVoiceCmd::Beep, "beep"},
-        {NxtVoiceCmd::Beep, "make a sound"},
-        {NxtVoiceCmd::SpinAround, "spin around"},
-        {NxtVoiceCmd::SpinAround, "turn around"},
+        {NxtVoiceCmd::Forward, "GO FORWARD", "go forward"},
+        {NxtVoiceCmd::Forward, "MOVE FORWARD", "move forward"},
+        {NxtVoiceCmd::Forward, "GO STRAIGHT", "go straight"},
+        {NxtVoiceCmd::Back, "GO BACK", "go back"},
+        {NxtVoiceCmd::Back, "MOVE BACK", "move back"},
+        {NxtVoiceCmd::Back, "GO BACKWARD", "go backward"},
+        {NxtVoiceCmd::Left, "TURN LEFT", "turn left"},
+        {NxtVoiceCmd::Right, "TURN RIGHT", "turn right"},
+        {NxtVoiceCmd::Stop, "STOP", "stop"},
+        {NxtVoiceCmd::Stop, "STOP NOW", "stop now"},
+        {NxtVoiceCmd::Stop, "HALT", "halt"},
+        {NxtVoiceCmd::Faster, "FASTER", "faster"},
+        {NxtVoiceCmd::Faster, "SPEED UP", "speed up"},
+        {NxtVoiceCmd::Slower, "SLOWER", "slower"},
+        {NxtVoiceCmd::Slower, "SLOW DOWN", "slow down"},
+        {NxtVoiceCmd::Beep, "BEEP", "beep"},
+        {NxtVoiceCmd::Beep, "MAKE A SOUND", "make a sound"},
+        {NxtVoiceCmd::SpinAround, "SPIN AROUND", "spin around"},
+        {NxtVoiceCmd::SpinAround, "TURN AROUND", "turn around"},
     };
 
     static void voiceTask(void* arg)
@@ -110,10 +114,23 @@ private:
 
     void run()
     {
-        srmodel_list_t* models = esp_srmodel_init("nxtvoice");
+        // esp-sr keeps one global model list; if something else (e.g. assets srmodels) loaded it
+        // first, esp_srmodel_init() would return that list instead of mapping our partition.
+        srmodel_list_t* models = get_static_srmodels();
+        if (models && !esp_srmodel_filter(models, ESP_MN_PREFIX, nullptr)) {
+            ESP_LOGW(TAG, "static srmodels lacks multinet; remapping nxtvoice");
+            esp_srmodel_deinit(models);
+            models = nullptr;
+        }
+        if (!models) models = esp_srmodel_init("nxtvoice");
         if (!models || models->num <= 0) {
             setStatus("no voice model");
             ESP_LOGE(TAG, "nxtvoice partition has no models");
+            return;
+        }
+        if (!esp_srmodel_filter(models, "fst", nullptr)) {
+            setStatus("model pkg missing fst");
+            ESP_LOGE(TAG, "srmodels missing 'fst' (required by MultiNet7)");
             return;
         }
         char* mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_ENGLISH);
@@ -129,18 +146,41 @@ private:
             setStatus("mn create failed");
             return;
         }
+        mn->set_det_threshold(mn_data, 0.35f);
 
-        esp_err_t err = esp_mn_commands_alloc(mn, mn_data);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            setStatus("cmd alloc err");
+        // MultiNet7 English requires G2P phonemes on every phrase node.
+        // Because CONFIG_SR_MN_EN_MULTINET7_QUANT is not set in sdkconfig (we pack mn7_en into
+        // our own partition), esp_mn_commands_add() skips flite_g2p() and leaves phonemes NULL.
+        // Build the esp_mn_node_t list with flite_g2p() directly and pass to set_speech_commands().
+        auto* root   = static_cast<esp_mn_node_t*>(calloc(1, sizeof(esp_mn_node_t)));
+        auto* tail   = root;
+        int added    = 0;
+        for (int i = 0; i < (int)(sizeof(kPhrases) / sizeof(kPhrases[0])); ++i) {
+            char* ph = flite_g2p(kPhrases[i].upper, 1);
+            if (!ph) continue;
+            if (mn->check_speech_command(mn_data, ph) == 0) {
+                ESP_LOGW(TAG, "invalid phonemes for '%s': '%s'", kPhrases[i].upper, ph);
+                free(ph);
+                continue;
+            }
+            auto* p       = static_cast<esp_mn_phrase_t*>(calloc(1, sizeof(esp_mn_phrase_t)));
+            p->string     = strdup(kPhrases[i].upper);
+            p->phonemes   = ph;
+            p->command_id = i + 1;
+            p->threshold  = 0;
+            auto* node    = static_cast<esp_mn_node_t*>(calloc(1, sizeof(esp_mn_node_t)));
+            node->phrase  = p;
+            tail->next    = node;
+            tail          = node;
+            ++added;
+            ESP_LOGI(TAG, "added cmd[%d] '%s' -> '%s'", i + 1, kPhrases[i].upper, ph);
+        }
+        if (added == 0) {
+            setStatus("0 valid cmds");
+            ESP_LOGE(TAG, "no valid speech commands could be added");
             return;
         }
-        esp_mn_commands_clear();
-        for (int i = 0; i < (int)(sizeof(kPhrases) / sizeof(kPhrases[0])); ++i) {
-            // phrase index + 1 as command id so we can map back to exact phrase
-            esp_mn_commands_add(i + 1, kPhrases[i].text);
-        }
-        esp_mn_error_t* mn_err = esp_mn_commands_update();
+        esp_mn_error_t* mn_err = mn->set_speech_commands(mn_data, root);
         if (mn_err && mn_err->num > 0) {
             for (int i = 0; i < mn_err->num; ++i) {
                 ESP_LOGW(TAG, "rejected phrase: %s", mn_err->phrases[i]->string);
